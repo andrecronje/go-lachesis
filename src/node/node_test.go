@@ -5,16 +5,19 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
-	"github.com/Fantom-foundation/go-lachesis/src/peers"
 	"github.com/Fantom-foundation/go-lachesis/src/common"
 	"github.com/Fantom-foundation/go-lachesis/src/crypto"
 	"github.com/Fantom-foundation/go-lachesis/src/dummy"
 	"github.com/Fantom-foundation/go-lachesis/src/net"
+	"github.com/Fantom-foundation/go-lachesis/src/peers"
 	"github.com/Fantom-foundation/go-lachesis/src/poset"
 	"github.com/Fantom-foundation/go-lachesis/src/utils"
 	"github.com/sirupsen/logrus"
@@ -286,7 +289,7 @@ func TestAddTransaction(t *testing.T) {
 	// check the Tx was removed from the transactionPool
 	// and added to the new Head
 
-	if l := len(node0.core.transactionPool); l > 0 {
+	if l := node0.core.txPool.len(); l > 0 {
 		t.Fatalf("node0's transactionPool should have 0 elements, not %d\n", l)
 	}
 
@@ -380,9 +383,9 @@ func recycleNode(oldNode *Node, logger *logrus.Logger, t *testing.T) *Node {
 
 	var store poset.Store
 	var err error
-	if _, ok := oldNode.core.poset.Store.(*poset.BadgerStore); ok {
+	if _, ok := oldNode.core.poset.Store().(*poset.BadgerStore); ok {
 		store, err = poset.LoadBadgerStore(
-			conf.CacheSize, oldNode.core.poset.Store.StorePath())
+			conf.CacheSize, oldNode.core.poset.Store().StorePath())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -422,7 +425,6 @@ func shutdownNodes(nodes []*Node) {
 }
 
 func TestGossip(t *testing.T) {
-
 	logger := common.NewTestLogger(t)
 
 	keys, ps := initPeers(4)
@@ -446,7 +448,7 @@ func TestMissingNodeGossip(t *testing.T) {
 	nodes := initNodes(keys, ps, 1000, 1000, "inmem", logger, t)
 	defer shutdownNodes(nodes)
 
-	err := gossip(nodes[1:], 10, true, 3*time.Second)
+	err := gossip(nodes[1:], 10, true, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,16 +500,15 @@ func TestSyncLimit(t *testing.T) {
 }
 
 func TestFastForward(t *testing.T) {
-
 	logger := common.NewTestLogger(t)
 
-	keys, ps := initPeers(4)
+	keys, ps := initPeers(5)
 	nodes := initNodes(keys, ps, 1000, 1000,
 		"inmem", logger, t)
 	defer shutdownNodes(nodes)
 
 	target := int64(50)
-	err := gossip(nodes[1:], target, false, 3*time.Second)
+	err := gossip(nodes[1:], target, false, 300*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +548,7 @@ func TestCatchUp(t *testing.T) {
 
 	target := int64(50)
 
-	err := gossip(normalNodes, target, false, 4*time.Second)
+	err := gossip(normalNodes, target, false, 40*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,9 +565,10 @@ func TestCatchUp(t *testing.T) {
 				t.Fatalf("Timeout waiting for node4 to enter CatchingUp state")
 			default:
 			}
-			if node4.getState() == CatchingUp {
+			if node4.state.getState() == CatchingUp {
 				break
 			}
+			<-time.After(time.Microsecond)
 		}
 	}()
 
@@ -576,12 +578,12 @@ func TestCatchUp(t *testing.T) {
 	// Gossip some more
 	nodes := append(normalNodes, node4)
 	newTarget := target + 20
-	err = bombardAndWait(nodes, newTarget, 10*time.Second)
+	err = bombardAndWait(nodes, newTarget, 1000*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	start := node4.core.poset.FirstConsensusRound
+	start := node4.core.poset.GetFirstConsensusRound()
 	checkGossip(nodes, *start, t)
 }
 
@@ -623,7 +625,7 @@ func TestFastSync(t *testing.T) {
 				t.Fatalf("Timeout waiting for node4 to enter CatchingUp state")
 			default:
 			}
-			if node4.getState() == CatchingUp {
+			if node4.state.getState() == CatchingUp {
 				break
 			}
 		}
@@ -641,7 +643,7 @@ func TestFastSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	start := node4.core.poset.FirstConsensusRound
+	start := node4.core.poset.GetFirstConsensusRound()
 	checkGossip(nodes, *start, t)
 }
 
@@ -731,7 +733,7 @@ func bombardAndWait(nodes []*Node, target int64, timeout time.Duration) error {
 			} else {
 				// wait until the target block has retrieved a state hash from
 				// the app
-				targetBlock, _ := n.core.poset.Store.GetBlock(target)
+				targetBlock, _ := n.core.poset.Store().GetBlock(target)
 				if len(targetBlock.GetStateHash()) == 0 {
 					done = false
 					break
@@ -751,8 +753,8 @@ func checkGossip(nodes []*Node, fromBlock int64, t *testing.T) {
 	nodeBlocks := map[int64][]poset.Block{}
 	for _, n := range nodes {
 		var blocks []poset.Block
-		for i := fromBlock; i < n.core.poset.Store.LastBlockIndex(); i++ {
-			block, err := n.core.poset.Store.GetBlock(i)
+		for i := fromBlock; i < n.core.poset.Store().LastBlockIndex(); i++ {
+			block, err := n.core.poset.Store().GetBlock(i)
 			if err != nil {
 				t.Fatalf("checkGossip: %v ", err)
 			}
@@ -812,4 +814,12 @@ func BenchmarkGossip(b *testing.B) {
 		nodes := initNodes(keys, ps, 1000, 1000, "inmem", logger, b)
 		gossip(nodes, 50, true, 3*time.Second)
 	}
+}
+
+func TestMain(m *testing.M) {
+	runtime.SetBlockProfileRate(1)
+	go func() {
+		fmt.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+	os.Exit(m.Run())
 }
