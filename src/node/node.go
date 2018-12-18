@@ -201,7 +201,7 @@ func (n *Node) doBackgroundWork() {
 
 // lachesis is interrupted when a gossip function, launched asynchronously, changes
 // the state from Gossiping to CatchingUp, or when the node is shutdown.
-// Otherwise, it processes RPC requests, periodicaly initiates gossip while there
+// Otherwise, it processes RPC requests, periodically initiates gossip while there
 // is something to gossip about, or waits.
 func (n *Node) lachesis(gossip bool) {
 	returnCh := make(chan struct{}, 100)

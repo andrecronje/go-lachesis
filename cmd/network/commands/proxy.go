@@ -33,7 +33,7 @@ type Handler struct {
 	stateHash []byte
 }
 
-// Called when a new block is comming
+// Called when a new block is coming
 // You must provide a method to compute the stateHash incrementaly with incoming blocks
 func (h *Handler) CommitHandler(block poset.Block) (stateHash []byte, err error) {
 	hash := h.stateHash
